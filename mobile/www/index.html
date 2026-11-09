@@ -31,7 +31,7 @@ nav button{background:none;color:#555;border-radius:0;margin:0}nav button.on{col
 <nav><button class="on" onclick="tab(0)">Ringkasan</button><button onclick="tab(1)">Transaksi</button><button onclick="tab(2)">Barang</button></nav>
 </div>
 <script>
-const SB_URL="https://utujhhreieubmzpmoxlw.supabase.co/rest/v1/", SB_KEY="sb_publishable_5trbXmALGPgGQl6rjC0W2Q_xxqhG8_5";
+const SB_URL="https://utujhhreieubmzpmoxlw.supabase.co", SB_KEY="sb_publishable_5trbXmALGPgGQl6rjC0W2Q_xxqhG8_5";
 const NATIVE=!!(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform());
 const REDIR=NATIVE?"com.anugrahfotocopy.keuangan://login":location.origin+location.pathname;
 const sb=supabase.createClient(SB_URL,SB_KEY,{auth:{flowType:"pkce",detectSessionInUrl:!NATIVE}});
