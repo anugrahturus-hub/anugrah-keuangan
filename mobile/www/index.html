@@ -1,0 +1,76 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Anugrah Keuangan</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+:root{--ac:#2563eb}*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:#f3f5f9;color:#111;padding-top:env(safe-area-inset-top);padding-bottom:calc(64px + env(safe-area-inset-bottom))}
+header{background:var(--ac);color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center}
+h1{font-size:18px;margin:0}small{opacity:.75}
+.card{background:#fff;border-radius:14px;margin:12px;padding:14px;box-shadow:0 1px 3px #0002}
+.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #eee;gap:8px}
+input,select,button{font:inherit;padding:10px;border-radius:10px;border:1px solid #ccd;width:100%;margin:4px 0}
+button{background:var(--ac);color:#fff;border:0;font-weight:600}
+button.x{background:#e5e9f2;color:#333;width:auto;padding:4px 10px;margin:0}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid #ddd;padding-bottom:env(safe-area-inset-bottom)}
+nav button{background:none;color:#555;border-radius:0;margin:0}nav button.on{color:var(--ac)}
+.in{color:#16a34a}.out{color:#dc2626}.big{font-size:22px}[hidden]{display:none!important}
+</style></head><body>
+<div id="login" class="card" style="margin-top:20vh;text-align:center"><h1>ANUGRAH FOTOCOPY</h1><p>Masuk dengan akun Google toko</p><button onclick="masuk()">Masuk dengan Google</button></div>
+<div id="app" hidden>
+<header><div><h1>ANUGRAH FOTOCOPY</h1><small id="em"></small></div><button class="x" onclick="sb.auth.signOut()">Keluar</button></header>
+<section id="t0"><div class="card"><small>Hari ini</small>
+<div class="row"><span>Pemasukan</span><b class="in" id="mh"></b></div>
+<div class="row"><span>Pengeluaran</span><b class="out" id="kh"></b></div>
+<div class="row"><span>Saldo (500 transaksi terakhir)</span><b class="big" id="sd"></b></div></div></section>
+<section id="t1" hidden><div class="card"><select id="tp"><option value="income">Pemasukan</option><option value="expense">Pengeluaran</option></select>
+<input id="kt" placeholder="Kategori"><input id="kg" placeholder="Keterangan"><input id="jm" type="number" inputmode="numeric" placeholder="Jumlah">
+<button onclick="catat()">Catat</button></div><div class="card" id="ls"></div></section>
+<section id="t2" hidden><div class="card"><input id="bn" placeholder="Nama barang/jasa"><input id="bh" type="number" inputmode="numeric" placeholder="Harga">
+<button onclick="simpanB()">Simpan</button></div><div class="card" id="lb"></div></section>
+<nav><button class="on" onclick="tab(0)">Ringkasan</button><button onclick="tab(1)">Transaksi</button><button onclick="tab(2)">Barang</button></nav>
+</div>
+<script>
+const SB_URL="https://utujhhreieubmzpmoxlw.supabase.co/rest/v1/", SB_KEY="sb_publishable_5trbXmALGPgGQl6rjC0W2Q_xxqhG8_5";
+const NATIVE=!!(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform());
+const REDIR=NATIVE?"com.anugrahfotocopy.keuangan://login":location.origin+location.pathname;
+const sb=supabase.createClient(SB_URL,SB_KEY,{auth:{flowType:"pkce",detectSessionInUrl:!NATIVE}});
+const $=id=>document.getElementById(id);
+const rp=n=>"Rp "+Math.round(n).toLocaleString("id-ID");
+const E=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let TR=[],IT=[];
+async function masuk(){
+  const {data,error}=await sb.auth.signInWithOAuth({provider:"google",options:{redirectTo:REDIR,skipBrowserRedirect:NATIVE}});
+  if(error)return alert(error.message);
+  if(NATIVE)Capacitor.Plugins.Browser.open({url:data.url});
+}
+if(NATIVE)Capacitor.Plugins.App.addListener("appUrlOpen",async ev=>{
+  const code=new URL(ev.url).searchParams.get("code");
+  if(code){await sb.auth.exchangeCodeForSession(code);Capacitor.Plugins.Browser.close();}
+});
+function tampil(s){$("login").hidden=!!s;$("app").hidden=!s;if(s){$("em").textContent=s.user.email;setTimeout(load,0);}}
+sb.auth.onAuthStateChange((_,s)=>tampil(s));
+sb.auth.getSession().then(({data})=>tampil(data.session));
+function tab(n){[0,1,2].forEach(i=>{$("t"+i).hidden=i!=n;document.querySelectorAll("nav button")[i].classList.toggle("on",i==n)})}
+async function cek(r){if(r.error){alert(r.error.message);return false}return true}
+async function load(){
+  const a=await sb.from("transactions").select("*").order("created_at",{ascending:false}).limit(500);
+  const b=await sb.from("items").select("*").order("name");
+  if(!await cek(a)||!await cek(b))return;
+  TR=a.data;IT=b.data;
+  const hari=new Date().toDateString();let mh=0,kh=0,m=0,k=0;
+  TR.forEach(t=>{const inc=t.type=="income",v=Number(t.amount);inc?m+=v:k+=v;if(new Date(t.created_at).toDateString()==hari)inc?mh+=v:kh+=v});
+  $("mh").textContent=rp(mh);$("kh").textContent=rp(kh);$("sd").textContent=rp(m-k);
+  $("ls").innerHTML=TR.slice(0,100).map(t=>`<div class="row"><span>${E(t.description||t.category||"-")}<br><small>${new Date(t.created_at).toLocaleString("id-ID")}</small></span><span class="${t.type=="income"?"in":"out"}">${rp(t.amount)} <button class="x" onclick="hapusT(${t.id})">✕</button></span></div>`).join("")||"Belum ada transaksi";
+  $("lb").innerHTML=IT.map(i=>`<div class="row"><span onclick="isiB(${i.id})">${E(i.name)}</span><span>${rp(i.price)} <button class="x" onclick="hapusB(${i.id})">✕</button></span></div>`).join("")||"Belum ada barang";
+}
+async function catat(){const j=parseFloat($("jm").value);if(!(j>0))return alert("Isi jumlah");
+  if(await cek(await sb.from("transactions").insert({type:$("tp").value,category:$("kt").value,description:$("kg").value,amount:j}))){$("jm").value=$("kg").value="";load()}}
+async function hapusT(id){if(confirm("Hapus transaksi?")&&await cek(await sb.from("transactions").delete().eq("id",id)))load()}
+async function simpanB(){const n=$("bn").value.trim(),h=parseFloat($("bh").value);if(!n||isNaN(h))return alert("Isi nama dan harga");
+  const a=IT.find(i=>i.name.toLowerCase()==n.toLowerCase());
+  const r=a?await sb.from("items").update({name:n,price:h}).eq("id",a.id):await sb.from("items").insert({name:n,price:h});
+  if(await cek(r)){$("bn").value=$("bh").value="";load()}}
+function isiB(id){const i=IT.find(x=>x.id==id);$("bn").value=i.name;$("bh").value=i.price}
+async function hapusB(id){if(confirm("Hapus barang?")&&await cek(await sb.from("items").delete().eq("id",id)))load()}
+</script></body></html>
