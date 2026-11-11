@@ -18,7 +18,7 @@ nav button{background:none;color:#555;border-radius:0;margin:0}nav button.on{col
 </style></head><body>
 <div id="login" class="card" style="margin-top:20vh;text-align:center"><h1>ANUGRAH FOTOCOPY</h1><p>Masuk dengan akun Google toko</p><button onclick="masuk()">Masuk dengan Google</button></div>
 <div id="app" hidden>
-<header><div><h1>ANUGRAH FOTOCOPY</h1><small id="em"></small></div><button class="x" onclick="sb.auth.signOut()">Keluar</button></header>
+<header><div><h1>ANUGRAH FOTOCOPY</h1><small id="em"></small></div><button class="x" onclick="keluar()">Keluar</button></header>
 <section id="t0"><div class="card"><small>Hari ini</small>
 <div class="row"><span>Pemasukan</span><b class="in" id="mh"></b></div>
 <div class="row"><span>Pengeluaran</span><b class="out" id="kh"></b></div>
@@ -30,8 +30,8 @@ nav button{background:none;color:#555;border-radius:0;margin:0}nav button.on{col
 <button onclick="simpanB()">Simpan</button></div><div class="card" id="lb"></div></section>
 <nav><button class="on" onclick="tab(0)">Ringkasan</button><button onclick="tab(1)">Transaksi</button><button onclick="tab(2)">Barang</button></nav>
 </div>
+<script src="config.js"></script>
 <script>
-const SB_URL="https://utujhhreieubmzpmoxlw.supabase.co", SB_KEY="sb_publishable_5trbXmALGPgGQl6rjC0W2Q_xxqhG8_5";
 const NATIVE=!!(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform());
 const REDIR=NATIVE?"com.anugrahfotocopy.keuangan://login":location.origin+location.pathname;
 const sb=supabase.createClient(SB_URL,SB_KEY,{auth:{flowType:"pkce",detectSessionInUrl:!NATIVE}});
@@ -39,15 +39,29 @@ const $=id=>document.getElementById(id);
 const rp=n=>"Rp "+Math.round(n).toLocaleString("id-ID");
 const E=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let TR=[],IT=[];
+let SLINIT=false;
 async function masuk(){
-  const {data,error}=await sb.auth.signInWithOAuth({provider:"google",options:{redirectTo:REDIR,skipBrowserRedirect:NATIVE}});
-  if(error)return alert(error.message);
-  if(NATIVE)Capacitor.Plugins.Browser.open({url:data.url});
+  if(!NATIVE){
+    const {error}=await sb.auth.signInWithOAuth({provider:"google",options:{redirectTo:REDIR}});
+    if(error)alert(error.message);
+    return;
+  }
+  try{
+    const SL=Capacitor.Plugins.SocialLogin;
+    if(!SLINIT){await SL.initialize({google:{webClientId:WEB_CLIENT_ID}});SLINIT=true;}
+    const {result}=await SL.login({provider:"google",options:{}});
+    if(!result||!result.idToken)throw new Error("Google tidak mengirim ID token");
+    const {error}=await sb.auth.signInWithIdToken({provider:"google",token:result.idToken});
+    if(error)throw error;
+  }catch(e){
+    if(e&&e.code==="USER_CANCELLED")return;
+    alert("Login gagal: "+((e&&e.message)||JSON.stringify(e)));
+  }
 }
-if(NATIVE)Capacitor.Plugins.App.addListener("appUrlOpen",async ev=>{
-  const code=new URL(ev.url).searchParams.get("code");
-  if(code){await sb.auth.exchangeCodeForSession(code);Capacitor.Plugins.Browser.close();}
-});
+async function keluar(){
+  try{if(NATIVE&&SLINIT)await Capacitor.Plugins.SocialLogin.logout({provider:"google"});}catch(e){}
+  await sb.auth.signOut();
+}
 function tampil(s){$("login").hidden=!!s;$("app").hidden=!s;if(s){$("em").textContent=s.user.email;setTimeout(load,0);}}
 sb.auth.onAuthStateChange((_,s)=>tampil(s));
 sb.auth.getSession().then(({data})=>tampil(data.session));
