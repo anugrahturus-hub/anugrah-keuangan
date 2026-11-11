@@ -1,12 +1,16 @@
+#ifndef AppVer
+  #define AppVer "1.2.2"
+#endif
+
 [Setup]
 AppId={{B3A1F6D2-5C7E-4E1B-9A44-2F0C8D7E6A11}
 AppName=Anugrah Keuangan
-AppVersion=1.0
+AppVersion={#AppVer}
 AppPublisher=Anugrah Fotocopy
 DefaultDirName={autopf}\AnugrahKeuangan
 DefaultGroupName=Anugrah Keuangan
 OutputDir=output
-OutputBaseFilename=AnugrahKeuangan-Setup
+OutputBaseFilename=AnugrahKeuangan-Setup-{#AppVer}
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
