@@ -1,5 +1,10 @@
 name: Build
-on: [push, workflow_dispatch]
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   windows:
     runs-on: windows-latest
@@ -11,11 +16,21 @@ jobs:
       - run: pip install pyinstaller
       - run: pyinstaller --onefile --noconsole --name AnugrahKeuangan anugrah_keuangan.py
       - run: choco install innosetup -y --no-progress
-      - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.release.tag_name }}".TrimStart("v")
+          if (-not $v) { $v = "1.0.0" }
+          "VER=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVer=$v" installer.iss
       - uses: actions/upload-artifact@v4
         with:
           name: installer-windows
-          path: output/AnugrahKeuangan-Setup.exe
+          path: output/AnugrahKeuangan-Setup-${{ env.VER }}.exe
+      - uses: softprops/action-gh-release@v2
+        if: github.event_name == 'release'
+        with:
+          files: output/AnugrahKeuangan-Setup-${{ env.VER }}.exe
   android:
     runs-on: ubuntu-latest
     defaults:
@@ -25,18 +40,33 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
       - run: npm install
       - run: npx cap add android
-      - run: |
-          sed -i 's#</activity>#<intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="com.anugrahfotocopy.keuangan" android:host="login"/></intent-filter></activity>#' android/app/src/main/AndroidManifest.xml
+      - name: Pakai kunci tanda tangan tetap
+        run: |
+          mkdir -p ~/.android
+          cp debug.keystore ~/.android/debug.keystore
+      - name: Set version
+        run: |
+          V="${{ github.event.release.tag_name }}"
+          V="${V#v}"
+          V="${V:-1.0.0}"
+          echo "VER=$V" >> "$GITHUB_ENV"
+          sed -i "s/versionName \"1.0\"/versionName \"$V\"/" android/app/build.gradle
+          sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/" android/app/build.gradle
       - run: npx cap sync android
       - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+      - run: cp android/app/build/outputs/apk/debug/app-debug.apk AnugrahKeuangan-${{ env.VER }}.apk
       - uses: actions/upload-artifact@v4
         with:
           name: apk-android
-          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          path: mobile/AnugrahKeuangan-${{ env.VER }}.apk
+      - uses: softprops/action-gh-release@v2
+        if: github.event_name == 'release'
+        with:
+          files: mobile/AnugrahKeuangan-${{ env.VER }}.apk
