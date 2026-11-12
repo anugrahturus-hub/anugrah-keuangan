@@ -15,10 +15,21 @@ button.x{background:#e5e9f2;color:#333;width:auto;padding:4px 10px;margin:0}
 nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid #ddd;padding-bottom:env(safe-area-inset-bottom)}
 nav button{background:none;color:#555;border-radius:0;margin:0}nav button.on{color:var(--ac)}
 .in{color:#16a34a}.out{color:#dc2626}.big{font-size:22px}[hidden]{display:none!important}
+button.sec{background:#e5e9f2;color:#333}
 </style></head><body>
-<div id="login" class="card" style="margin-top:20vh;text-align:center"><h1>ANUGRAH FOTOCOPY</h1><p>Masuk dengan akun Google toko</p><button onclick="masuk()">Masuk dengan Google</button></div>
+<div id="login" class="card" style="margin-top:6vh;text-align:center"><h1>ANUGRAH FOTOCOPY</h1><p>Masuk atau buat akun baru</p>
+<button onclick="masuk()">Masuk dengan Google</button>
+<p style="margin:10px 0 2px"><small>atau pakai email</small></p>
+<input id="em_in" type="email" placeholder="Email" autocomplete="username">
+<input id="pw_in" type="password" placeholder="Kata sandi (min. 6 karakter)" autocomplete="current-password">
+<div id="ps" style="color:#dc2626;font-size:13px;min-height:18px"></div>
+<button onclick="masukEmail()">Masuk</button><button class="sec" onclick="daftar()">Buat akun baru</button>
+<p style="margin:10px 0 2px"><small>atau</small></p>
+<button class="sec" onclick="tamu()">Masuk sebagai Tamu (demo)</button>
+<small>Mode tamu memakai data contoh dan tidak menyimpan apa pun.</small></div>
 <div id="app" hidden>
 <header><div><h1>ANUGRAH FOTOCOPY</h1><small id="em"></small></div><button class="x" onclick="keluar()">Keluar</button></header>
+<div id="tamu" hidden style="background:#fef3c7;color:#92400e;padding:8px 16px;font-size:13px">MODE TAMU: data contoh, tidak tersimpan, dan tidak terhubung ke data toko.</div>
 <section id="t0"><div class="card"><small>Hari ini</small>
 <div class="row"><span>Pemasukan</span><b class="in" id="mh"></b></div>
 <div class="row"><span>Pengeluaran</span><b class="out" id="kh"></b></div>
@@ -39,6 +50,37 @@ const $=id=>document.getElementById(id);
 const rp=n=>"Rp "+Math.round(n).toLocaleString("id-ID");
 const E=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let TR=[],IT=[];
+const tr=m=>/invalid login/i.test(m)?"Email atau kata sandi salah.":/not confirmed/i.test(m)?"Email belum dikonfirmasi. Cek kotak masuk emailmu.":/already registered/i.test(m)?"Email sudah terdaftar. Tekan Masuk.":/rate limit/i.test(m)?"Terlalu banyak percobaan. Tunggu beberapa menit.":m;
+function pesan(t,ok){const e=$("ps");e.textContent=t;e.style.color=ok?"#2563eb":"#dc2626";}
+async function masukEmail(){
+  const e=$("em_in").value.trim(),p=$("pw_in").value;
+  if(!e||!p)return pesan("Isi email dan kata sandi.");
+  pesan("Masuk...",1);
+  const {error}=await sb.auth.signInWithPassword({email:e,password:p});
+  if(error)pesan(tr(error.message));
+}
+async function daftar(){
+  const e=$("em_in").value.trim(),p=$("pw_in").value;
+  if(!e||p.length<6)return pesan("Isi email dan kata sandi minimal 6 karakter.");
+  pesan("Membuat akun...",1);
+  const {data,error}=await sb.auth.signUp({email:e,password:p});
+  if(error)return pesan(tr(error.message));
+  if(!data.session)pesan("Akun dibuat. Cek email untuk konfirmasi, lalu tekan Masuk.",1);
+}
+let GUEST=false;
+function contoh(){
+  const t=(j,type,kat,ket,amt)=>({id:1000+j,type,category:kat,description:ket,amount:amt,created_at:new Date(Date.now()-j*5400e3).toISOString()});
+  TR=[t(1,"income","Kasir","Fotocopy A4 x65 @250",16250),t(2,"income","Kasir","Print Warna x7 @1000",7000),
+      t(3,"expense","Kertas","Beli kertas A4 eceran",12000),t(4,"income","Kasir","Jilid Spiral x1 @5000",5000),
+      t(5,"income","Kasir","Laminating A4 x2 @5000",10000)];
+  IT=[{id:1,name:"Fotocopy A4",price:250},{id:2,name:"Print Hitam Putih",price:1000},{id:3,name:"Print Warna",price:2000},
+      {id:4,name:"Jilid Spiral",price:5000},{id:5,name:"Laminating A4",price:5000},{id:6,name:"Amplop Coklat",price:2000}];
+}
+function tamu(){
+  GUEST=true;contoh();
+  $("tamu").hidden=false;$("em").textContent="Mode Tamu";
+  $("login").hidden=true;$("app").hidden=false;tab(0);render();
+}
 let SLINIT=false;
 async function masuk(){
   if(!NATIVE){
@@ -59,19 +101,23 @@ async function masuk(){
   }
 }
 async function keluar(){
+  if(GUEST){GUEST=false;TR=[];IT=[];$("tamu").hidden=true;$("app").hidden=true;$("login").hidden=false;return;}
   try{if(NATIVE&&SLINIT)await Capacitor.Plugins.SocialLogin.logout({provider:"google"});}catch(e){}
   await sb.auth.signOut();
 }
-function tampil(s){$("login").hidden=!!s;$("app").hidden=!s;if(s){$("em").textContent=s.user.email;setTimeout(load,0);}}
+function tampil(s){if(GUEST&&!s)return;$("login").hidden=!!s;$("app").hidden=!s;if(s){$("em").textContent=s.user.email;setTimeout(load,0);}}
 sb.auth.onAuthStateChange((_,s)=>tampil(s));
 sb.auth.getSession().then(({data})=>tampil(data.session));
 function tab(n){[0,1,2].forEach(i=>{$("t"+i).hidden=i!=n;document.querySelectorAll("nav button")[i].classList.toggle("on",i==n)})}
 async function cek(r){if(r.error){alert(r.error.message);return false}return true}
 async function load(){
+  if(GUEST){render();return;}
   const a=await sb.from("transactions").select("*").order("created_at",{ascending:false}).limit(500);
   const b=await sb.from("items").select("*").order("name");
   if(!await cek(a)||!await cek(b))return;
-  TR=a.data;IT=b.data;
+  TR=a.data;IT=b.data;render();
+}
+function render(){
   const hari=new Date().toDateString();let mh=0,kh=0,m=0,k=0;
   TR.forEach(t=>{const inc=t.type=="income",v=Number(t.amount);inc?m+=v:k+=v;if(new Date(t.created_at).toDateString()==hari)inc?mh+=v:kh+=v});
   $("mh").textContent=rp(mh);$("kh").textContent=rp(kh);$("sd").textContent=rp(m-k);
@@ -79,12 +125,14 @@ async function load(){
   $("lb").innerHTML=IT.map(i=>`<div class="row"><span onclick="isiB(${i.id})">${E(i.name)}</span><span>${rp(i.price)} <button class="x" onclick="hapusB(${i.id})">✕</button></span></div>`).join("")||"Belum ada barang";
 }
 async function catat(){const j=parseFloat($("jm").value);if(!(j>0))return alert("Isi jumlah");
+  if(GUEST){TR.unshift({id:Date.now(),type:$("tp").value,category:$("kt").value,description:$("kg").value,amount:j,created_at:new Date().toISOString()});$("jm").value=$("kg").value="";render();return;}
   if(await cek(await sb.from("transactions").insert({type:$("tp").value,category:$("kt").value,description:$("kg").value,amount:j}))){$("jm").value=$("kg").value="";load()}}
-async function hapusT(id){if(confirm("Hapus transaksi?")&&await cek(await sb.from("transactions").delete().eq("id",id)))load()}
+async function hapusT(id){if(GUEST){if(confirm("Hapus transaksi contoh?")){TR=TR.filter(t=>t.id!=id);render();}return;}if(confirm("Hapus transaksi?")&&await cek(await sb.from("transactions").delete().eq("id",id)))load()}
 async function simpanB(){const n=$("bn").value.trim(),h=parseFloat($("bh").value);if(!n||isNaN(h))return alert("Isi nama dan harga");
+  if(GUEST){const a=IT.find(i=>i.name.toLowerCase()==n.toLowerCase());if(a)a.price=h;else IT.push({id:Date.now(),name:n,price:h});$("bn").value=$("bh").value="";render();return;}
   const a=IT.find(i=>i.name.toLowerCase()==n.toLowerCase());
   const r=a?await sb.from("items").update({name:n,price:h}).eq("id",a.id):await sb.from("items").insert({name:n,price:h});
   if(await cek(r)){$("bn").value=$("bh").value="";load()}}
 function isiB(id){const i=IT.find(x=>x.id==id);$("bn").value=i.name;$("bh").value=i.price}
-async function hapusB(id){if(confirm("Hapus barang?")&&await cek(await sb.from("items").delete().eq("id",id)))load()}
+async function hapusB(id){if(GUEST){if(confirm("Hapus barang contoh?")){IT=IT.filter(i=>i.id!=id);render();}return;}if(confirm("Hapus barang?")&&await cek(await sb.from("items").delete().eq("id",id)))load()}
 </script></body></html>

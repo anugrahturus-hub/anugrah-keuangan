@@ -1,12 +1,12 @@
 import json, os, sys, tempfile, subprocess, hashlib, base64, secrets, threading, webbrowser, http.server
 import re, textwrap
 import urllib.request, urllib.error, urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 NAMA_TOKO = "ANUGRAH FOTOCOPY"
-VERSI = "1.2.2"
+VERSI = "1.3.0"
 BASE = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 CFG_PATH = os.path.join(BASE, "config.json")
 CFG = json.load(open(CFG_PATH, encoding="utf-8"))
@@ -61,6 +61,8 @@ AUTH = CFG["supabase_url"].rstrip("/") + "/auth/v1/"
 PORT = 54321
 SES_PATH = os.path.join(os.environ.get("APPDATA", BASE), "AnugrahKeuangan", "session.json")
 SES = {}
+GUEST = False
+_DEMO = None
 
 
 def hdr():
@@ -99,6 +101,30 @@ def sesi_tersimpan():
     return refresh()
 
 
+def pesan_auth(e):
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            j = json.loads(e.read().decode())
+            t = str(j.get("error_description") or j.get("msg") or j.get("message") or "")
+        except Exception:
+            t = ""
+        tl = t.lower()
+        if "invalid login" in tl:
+            return "Email atau kata sandi salah."
+        if "not confirmed" in tl:
+            return "Email belum dikonfirmasi. Cek kotak masuk emailmu."
+        if "already registered" in tl or "already been registered" in tl:
+            return "Email sudah terdaftar. Tekan Masuk."
+        if "password" in tl and ("least" in tl or "weak" in tl or "short" in tl):
+            return "Kata sandi terlalu pendek atau lemah."
+        if e.code == 429 or "rate limit" in tl:
+            return "Terlalu banyak percobaan. Tunggu beberapa menit."
+        if "disabled" in tl:
+            return "Pendaftaran email dinonaktifkan di Supabase."
+        return "Gagal (%d): %s" % (e.code, t or e.reason)
+    return "Gagal: %s" % e
+
+
 def login_google():
     ver = secrets.token_urlsafe(64)
     cha = base64.urlsafe_b64encode(hashlib.sha256(ver.encode()).digest()).decode().rstrip("=")
@@ -123,7 +149,60 @@ def login_google():
     simpan_sesi(auth_post("token?grant_type=pkce", {"auth_code": hasil["code"], "code_verifier": ver}))
 
 
+def demo_db():
+    global _DEMO
+    if _DEMO is None:
+        def w(jam):
+            return (datetime.now(timezone.utc) - timedelta(hours=jam)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        brg = [("Fotocopy A4", 250, 100), ("Print Hitam Putih", 1000, 300), ("Print Warna", 2000, 800), ("Jilid Spiral", 5000, 2500),
+               ("Laminating A4", 5000, 2000), ("Amplop Coklat", 2000, 1200), ("Stopmap Kertas", 1000, 600)]
+        trx = [(1, "income", "Kasir", "Cash", "Fotocopy A4 x65 @250", 16250, 9750),
+               (2, "income", "Kasir", "QRIS", "Print Warna x7 @2000", 14000, 8400),
+               (4, "expense", "Tinta", None, "Beli tinta printer", 25000, None),
+               (26, "income", "Kasir", "Transfer", "Jilid Spiral x2 @5000", 10000, 5000),
+               (28, "income", "Kasir", "Cash", "Laminating A4 x3 @5000", 15000, 9000),
+               (52, "income", "Kasir", "Cash", "Amplop Coklat x10 @2000", 20000, 8000)]
+        _DEMO = {"items": [{"id": i + 1, "name": n, "price": p, "cost": c} for i, (n, p, c) in enumerate(brg)],
+                 "transactions": [{"id": 100 + i, "created_at": w(j), "type": t, "category": k, "payment_method": m,
+                                   "description": d, "amount": a, "profit": b} for i, (j, t, k, m, d, a, b) in enumerate(trx)]}
+    return _DEMO
+
+
+def api_demo(method, table, params, body):
+    """Pengganti Supabase untuk mode tamu: semua data hanya di memori."""
+    rows = demo_db()[table]
+    q = urllib.parse.parse_qs(params.lstrip("?"))
+    idf = (q.get("id") or [""])[0]
+    rid = int(idf[3:]) if idf.startswith("eq.") else None
+    if method == "GET":
+        out = list(rows)
+        for f in q.get("created_at", []):
+            op, val = f.split(".", 1)
+            t = lokal(val)
+            out = [r for r in out if (lokal(r["created_at"]) >= t if op == "gte" else lokal(r["created_at"]) < t)]
+        o = (q.get("order") or [""])[0]
+        if o:
+            k, _, d = o.partition(".")
+            out.sort(key=lambda r: r.get(k) or "", reverse=(d == "desc"))
+        lim = int((q.get("limit") or ["0"])[0] or 0)
+        return [dict(r) for r in (out[:lim] if lim else out)]
+    if method == "POST":
+        r = dict(body); r["id"] = max([x["id"] for x in rows] + [0]) + 1
+        if table == "transactions":
+            r["created_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        rows.append(r)
+    elif method == "PATCH":
+        for r in rows:
+            if r["id"] == rid:
+                r.update(body)
+    elif method == "DELETE":
+        rows[:] = [r for r in rows if r["id"] != rid]
+    return None
+
+
 def api(method, table, params="", body=None):
+    if GUEST:
+        return api_demo(method, table, params, body)
     for n in (0, 1):
         req = urllib.request.Request(URL + table + params, method=method, headers=hdr(),
                                      data=json.dumps(body).encode() if body is not None else None)
@@ -261,7 +340,10 @@ class App(tk.Tk):
         tk.Label(hd, text=NAMA_TOKO, bg="#2563eb", fg="#ffffff", font=("Segoe UI", 15, "bold")).pack(side="left", padx=16, pady=10)
         tk.Label(hd, text="Kasir & Keuangan  v" + VERSI, bg="#2563eb", fg="#bfdbfe", font=("Segoe UI", 10)).pack(side="left")
         tk.Button(hd, text="Keluar", command=self.keluar, bg="#1d4ed8", fg="#ffffff", relief="flat", bd=0, padx=10).pack(side="right", padx=12)
-        tk.Label(hd, text=SES.get("email", ""), bg="#2563eb", fg="#dbeafe", font=("Segoe UI", 10)).pack(side="right")
+        tk.Label(hd, text=("Mode Tamu" if GUEST else SES.get("email", "")), bg="#2563eb", fg="#dbeafe", font=("Segoe UI", 10)).pack(side="right")
+        if GUEST:
+            tk.Label(self, text="MODE TAMU: data contoh, tidak tersimpan dan tidak terhubung ke data toko.", bg="#fef3c7", fg="#92400e",
+                     font=("Segoe UI", 10)).pack(fill="x")
         self.items, self.cart, self.cocok = [], [], []
         self.modal = {}
         self.nb = ttk.Notebook(self)
@@ -279,40 +361,87 @@ class App(tk.Tk):
     def masuk(self):
         if sesi_tersimpan():
             return True
-        d = tk.Toplevel(self); d.title("Masuk"); d.geometry("420x250"); d.configure(bg="#f3f5f9"); d.grab_set()
-        ttk.Label(d, text=NAMA_TOKO, font=("Segoe UI", 18, "bold")).pack(pady=(32, 4))
-        ttk.Label(d, text="Masuk dengan akun Google toko (sama dengan di HP)").pack()
-        lbl = ttk.Label(d, text="", wraplength=380); lbl.pack(pady=8)
-        res = {}
+        d = tk.Toplevel(self); d.title("Masuk"); d.geometry("440x560"); d.configure(bg="#f3f5f9"); d.grab_set()
+        ttk.Label(d, text=NAMA_TOKO, font=("Segoe UI", 18, "bold")).pack(pady=(22, 2))
+        ttk.Label(d, text="Masuk atau buat akun baru").pack()
+        res, tombol = {}, []
+        lbl = ttk.Label(d, text="", wraplength=360)
+        em, pw = tk.StringVar(), tk.StringVar()
+
+        def kunci(x):
+            for b in tombol:
+                b.config(state="disabled" if x else "normal")
 
         def cek():
-            if "e" in res:
-                e = res.pop("e")
-                if e:
-                    lbl.config(text=e); btn.config(state="normal")
-                else:
+            if "r" in res:
+                ok, teks = res.pop("r"); kunci(False)
+                if ok:
                     d.destroy()
+                else:
+                    lbl.config(text=teks, foreground="#dc2626" if ok is False else "#2563eb")
             else:
                 d.after(300, cek)
 
-        def mulai():
-            btn.config(state="disabled"); lbl.config(text="Menunggu login di browser... (maks 3 menit)")
+        def jalan(fn, info):
+            kunci(True); lbl.config(text=info, foreground="#2563eb")
 
             def kerja():
                 try:
-                    login_google(); res["e"] = None
-                except Exception as e:
-                    res["e"] = "Gagal: %s" % e
+                    res["r"] = fn()
+                except Exception as x:
+                    res["r"] = (False, pesan_auth(x))
             threading.Thread(target=kerja, daemon=True).start(); cek()
-        btn = ttk.Button(d, text="Masuk dengan Google", style="Accent.TButton", command=mulai)
-        btn.pack(ipadx=14, pady=8)
+
+        def do_google():
+            def fn():
+                login_google(); return True, ""
+            jalan(fn, "Menunggu login di browser... (maks 3 menit)")
+
+        def do_masuk(_=None):
+            e, p = em.get().strip(), pw.get()
+            if not e or not p:
+                return lbl.config(text="Isi email dan kata sandi.", foreground="#dc2626")
+
+            def fn():
+                simpan_sesi(auth_post("token?grant_type=password", {"email": e, "password": p})); return True, ""
+            jalan(fn, "Masuk...")
+
+        def do_daftar():
+            e, p = em.get().strip(), pw.get()
+            if not e or len(p) < 6:
+                return lbl.config(text="Isi email dan kata sandi minimal 6 karakter.", foreground="#dc2626")
+
+            def fn():
+                r = auth_post("signup", {"email": e, "password": p})
+                if r.get("access_token"):
+                    simpan_sesi(r); return True, ""
+                return None, "Akun dibuat. Cek email untuk konfirmasi, lalu tekan Masuk."
+            jalan(fn, "Membuat akun...")
+
+        def do_tamu():
+            global GUEST
+            GUEST = True; d.destroy()
+        b = ttk.Button(d, text="Masuk dengan Google", style="Accent.TButton", command=do_google)
+        b.pack(fill="x", padx=40, pady=(16, 4), ipady=4); tombol.append(b)
+        ttk.Label(d, text="atau pakai email").pack(pady=4)
+        ttk.Label(d, text="Email").pack(anchor="w", padx=40)
+        ttk.Entry(d, textvariable=em).pack(fill="x", padx=40)
+        ttk.Label(d, text="Kata sandi (minimal 6 karakter)").pack(anchor="w", padx=40, pady=(6, 0))
+        e2 = ttk.Entry(d, textvariable=pw, show="*"); e2.pack(fill="x", padx=40)
+        e2.bind("<Return>", do_masuk)
+        lbl.pack(pady=6)
+        for t, c in (("Masuk", do_masuk), ("Buat akun baru", do_daftar)):
+            b = ttk.Button(d, text=t, command=c); b.pack(fill="x", padx=40, pady=2); tombol.append(b)
+        b = ttk.Button(d, text="Masuk sebagai Tamu (demo)", command=do_tamu); b.pack(fill="x", padx=40, pady=(14, 2))
+        ttk.Label(d, text="Mode tamu memakai data contoh dan tidak menyimpan apa pun.", wraplength=360).pack(pady=2)
         self.wait_window(d)
-        return bool(SES.get("access_token"))
+        return bool(SES.get("access_token")) or GUEST
 
     def keluar(self):
-        if messagebox.askyesno("Keluar", "Keluar dari akun %s?" % SES.get("email", "")):
+        if messagebox.askyesno("Keluar", "Keluar dari akun %s?" % ("tamu" if GUEST else SES.get("email", ""))):
             try:
-                os.remove(SES_PATH)
+                if not GUEST:
+                    os.remove(SES_PATH)
             except OSError:
                 pass
             self.destroy()
