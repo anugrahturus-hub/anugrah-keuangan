@@ -26,7 +26,7 @@ button.sec{background:#e5e9f2;color:#333}
 <button onclick="masukEmail()">Masuk</button><button class="sec" onclick="daftar()">Buat akun baru</button>
 <p style="margin:10px 0 2px"><small>atau</small></p>
 <button class="sec" onclick="tamu()">Masuk sebagai Tamu (demo)</button>
-<small>Mode tamu memakai data contoh dan tidak menyimpan apa pun.</small></div>
+<small>Mode tamu memakai data contoh dan tidak menyimpan apa pun. &middot; v1.3.2</small></div>
 <div id="app" hidden>
 <header><div><h1>ANUGRAH FOTOCOPY</h1><small id="em"></small></div><button class="x" onclick="keluar()">Keluar</button></header>
 <div id="tamu" hidden style="background:#fef3c7;color:#92400e;padding:8px 16px;font-size:13px">MODE TAMU: data contoh, tidak tersimpan, dan tidak terhubung ke data toko.</div>
@@ -88,16 +88,18 @@ async function masuk(){
     if(error)alert(error.message);
     return;
   }
+  if(!/^\d+-.+\.apps\.googleusercontent\.com$/.test(WEB_CLIENT_ID))return alert("WEB_CLIENT_ID di config.js belum benar. Harus berakhiran .apps.googleusercontent.com (ID client Web).");
   try{
     const SL=Capacitor.Plugins.SocialLogin;
     if(!SLINIT){await SL.initialize({google:{webClientId:WEB_CLIENT_ID}});SLINIT=true;}
-    const {result}=await SL.login({provider:"google",options:{}});
+    const {result}=await SL.login({provider:"google",options:{style:"bottom",filterByAuthorizedAccounts:false,scopes:["profile","email"]}});
     if(!result||!result.idToken)throw new Error("Google tidak mengirim ID token");
     const {error}=await sb.auth.signInWithIdToken({provider:"google",token:result.idToken});
     if(error)throw error;
   }catch(e){
     if(e&&e.code==="USER_CANCELLED")return;
-    alert("Login gagal: "+((e&&e.message)||JSON.stringify(e)));
+    const idc=WEB_CLIENT_ID.replace(".apps.googleusercontent.com","");
+    alert("Login gagal: "+((e&&e.message)||JSON.stringify(e))+"\n\nWeb Client ID di aplikasi: "+idc.slice(0,16)+"..."+idc.slice(-4)+"\nVersi aplikasi: 1.3.2");
   }
 }
 async function keluar(){
