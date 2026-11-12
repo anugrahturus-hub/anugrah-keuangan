@@ -60,7 +60,26 @@ jobs:
           sed -i "s/versionName \"1.0\"/versionName \"$V\"/" android/app/build.gradle
           sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/" android/app/build.gradle
       - run: npx cap sync android
-      - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+      - run: |
+          cd android && chmod +x gradlew
+          ./gradlew assembleDebug \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/mobile/debug.keystore" \
+            -Pandroid.injected.signing.store.password=android \
+            -Pandroid.injected.signing.key.alias=androiddebugkey \
+            -Pandroid.injected.signing.key.password=android
+      - name: Periksa sidik jari tanda tangan APK
+        continue-on-error: true
+        run: |
+          AS=$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/build-tools/* | sort -V | tail -1)/apksigner
+          SHA=$("$AS" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -i "SHA-1 digest" | head -1 | sed 's/.*: //' | tr -d ':' | tr 'A-F' 'a-f')
+          EXP=672d849241725fa18fa57b7c7cb0f369dda844f5
+          KS=$(keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep "SHA1:" | head -1 | sed 's/.*SHA1: //' | tr -d ':' | tr 'A-F' 'a-f')
+          if [ -z "$SHA" ]; then HASIL="Tidak bisa membaca sidik jari APK"; elif [ "$SHA" = "$EXP" ]; then HASIL="COCOK dengan client Android di Google Cloud"; else HASIL="TIDAK COCOK - login Google akan gagal"; fi
+          echo "SHA-1 APK        : $SHA"
+          echo "SHA-1 di Google  : $EXP"
+          echo "SHA-1 keystore repo: $KS"
+          echo "Hasil            : $HASIL"
+          { echo "### Sidik jari tanda tangan APK"; echo "- SHA-1 APK: \`$SHA\`"; echo "- SHA-1 keystore di repo: \`$KS\`"; echo "- SHA-1 di Google Cloud: \`$EXP\`"; echo "- **$HASIL**"; } >> "$GITHUB_STEP_SUMMARY"
       - run: cp android/app/build/outputs/apk/debug/app-debug.apk AnugrahKeuangan-${{ env.VER }}.apk
       - uses: actions/upload-artifact@v4
         with:
