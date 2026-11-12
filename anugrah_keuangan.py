@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 NAMA_TOKO = "ANUGRAH FOTOCOPY"
-VERSI = "1.3.2"
+VERSI = "1.3.3"
 BASE = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 CFG_PATH = os.path.join(BASE, "config.json")
 CFG = json.load(open(CFG_PATH, encoding="utf-8"))
