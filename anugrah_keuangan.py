@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 NAMA_TOKO = "ANUGRAH FOTOCOPY"
-VERSI = "1.3.3"
+VERSI = "1.4.0"
 BASE = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 CFG_PATH = os.path.join(BASE, "config.json")
 CFG = json.load(open(CFG_PATH, encoding="utf-8"))
@@ -36,6 +36,9 @@ KASIR
   F7          Hapus item terpilih (juga tombol Delete pada daftar belanja)
   F8          Kosongkan semua belanjaan
   F11         Ganti metode pembayaran (Cash / QRIS / Transfer)
+  Ctrl+T      Transaksi baru (tab di atas daftar belanja, seperti tab browser)
+  Ctrl+W      Tutup transaksi yang sedang aktif
+  Alt+1..9    Pindah ke transaksi ke-1 sampai ke-9
   F10         Fokus ke kolom "Uang diterima" (kembalian dihitung otomatis)
   F12         Bayar: tampil preview struk dulu, Enter untuk cetak & simpan, Esc untuk batal
 
@@ -43,12 +46,15 @@ TRANSAKSI & BARANG
   Ctrl+S      Catat transaksi (tab Transaksi) / Simpan barang (tab Barang)
   Ctrl+P      Ekspor riwayat transaksi ke PDF (pilih Hari/Minggu/Bulan/Tahun + tanggal acuan; PDF memuat rekap per hari)
   Alt+R       Ganti tampilan Riwayat / Rekap per hari (tab Transaksi)
+  Alt+Kiri / Alt+Kanan   Riwayat hari sebelumnya / berikutnya (atau ketik tanggal lalu Enter)
   F7          Hapus data terpilih
 
 PRINTER STRUK
   Saat pertama kali cetak, pilih printer lalu centang "Jadikan printer default".
   Setelah itu struk langsung dicetak ke printer tersebut.
   Untuk mengganti printer, tekan F9 atau klik tombol "Ganti Printer".
+  Di jendela preview, pilih posisi cetak di kertas (kiri atas, tengah, kanan bawah, dst.) seperti di Corel,
+  lalu atur jarak dari tepi dan ukuran huruf. Pilihan terakhir diingat.
 
 TIPS
   Jika item yang sama dengan harga yang sama ditambahkan lagi, qty-nya otomatis bertambah.
@@ -262,19 +268,92 @@ def tulis_pdf(path, judul, info, ringkas, kepala, baris):
     open(path, "wb").write(out)
 
 
-def cetak_teks(teks, printer):
-    """Cetak teks ke printer bernama lewat PowerShell Out-Printer (tidak memakai Notepad)."""
+NAMA_HARI = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
+
+
+def hari_ini():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def hitung_posisi(ax, ay, dx, dy, bw, bh, W=210.0, H=297.0):
+    """Posisi (mm) kiri-atas blok struk di kertas. ax/ay: 0 = kiri/atas, 0.5 = tengah, 1 = kanan/bawah.
+    dx/dy = jarak dari tepi (ke arah dalam untuk tepi kanan/bawah)."""
+    x = (W - bw) * ax + (dx if ax < 1 else -dx)
+    y = (H - bh) * ay + (dy if ay < 1 else -dy)
+    return x, y
+
+
+PS_CETAK = r'''$ErrorActionPreference = "Stop"
+try {
+  Add-Type -AssemblyName System.Drawing
+  $teks = [IO.File]::ReadAllText($env:STRUK_FILE, [Text.Encoding]::UTF8)
+  $lines = @($teks -split "\r?\n")
+  $ax = [double]$env:STRUK_AX; $ay = [double]$env:STRUK_AY
+  $dx = [double]$env:STRUK_DX; $dy = [double]$env:STRUK_DY
+  $font = New-Object System.Drawing.Font("Courier New", [single]([double]$env:STRUK_FONT))
+  $doc = New-Object System.Drawing.Printing.PrintDocument
+  $doc.PrinterSettings.PrinterName = $env:STRUK_PRINTER
+  if (-not $doc.PrinterSettings.IsValid) { throw "Printer tidak ditemukan: $($env:STRUK_PRINTER)" }
+  $doc.DocumentName = "Struk"
+  $doc.add_PrintPage({
+    param($s, $e)
+    $g = $e.Graphics
+    $fmt = [System.Drawing.StringFormat]::GenericTypographic
+    $lh = $font.GetHeight($g)
+    $cw = $g.MeasureString("MMMMMMMMMM", $font, 100000, $fmt).Width / 10
+    $maxlen = 0
+    foreach ($l in $lines) { $n = $l.TrimEnd().Length; if ($n -gt $maxlen) { $maxlen = $n } }
+    $w = $cw * $maxlen
+    $h = $lh * $lines.Count
+    $pa = $e.PageSettings.PrintableArea
+    $aw = $pa.Width; $ah = $pa.Height
+    if ($aw -le 0) { $aw = $e.PageBounds.Width; $ah = $e.PageBounds.Height }
+    $x = ($aw - $w) * $ax + $dx * 3.937
+    $y = ($ah - $h) * $ay + $dy * 3.937
+    $i = 0
+    foreach ($l in $lines) {
+      $g.DrawString($l, $font, [System.Drawing.Brushes]::Black, [single]$x, [single]($y + $i * $lh), $fmt)
+      $i++
+    }
+    $e.HasMorePages = $false
+  })
+  $doc.Print()
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}
+'''
+
+
+def cetak_teks(teks, printer, pos=None):
+    """Cetak struk. Dengan pos: gambar di posisi pilihan (PrintDocument); jika gagal, jatuh ke Out-Printer biasa."""
     path = os.path.join(tempfile.gettempdir(), "struk.txt")
     open(path, "w", encoding="utf-8").write(teks)
     env = dict(os.environ, STRUK_FILE=path, STRUK_PRINTER=printer)
+    catatan = ""
+    if pos:
+        ps = os.path.join(tempfile.gettempdir(), "struk_cetak.ps1")
+        open(ps, "w", encoding="utf-8-sig").write(PS_CETAK)
+        e2 = dict(env, STRUK_AX="%.3f" % pos["ax"], STRUK_AY="%.3f" % pos["ay"], STRUK_DX="%.2f" % pos["dx"],
+                  STRUK_DY="%.2f" % pos["dy"], STRUK_FONT="%.1f" % pos["font"])
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps],
+                               env=e2, capture_output=True, text=True, timeout=90, creationflags=NOWIN)
+            if r.returncode == 0:
+                return True, ""
+            catatan = (r.stderr or r.stdout or "").strip()[:200]
+        except Exception as ex:
+            catatan = str(ex)
     cmd = "Get-Content -Raw -Encoding UTF8 -LiteralPath $env:STRUK_FILE | Out-Printer -Name $env:STRUK_PRINTER"
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], env=env,
                            capture_output=True, text=True, timeout=90, creationflags=NOWIN)
-    except Exception as e:
-        return False, str(e)
+    except Exception as ex:
+        return False, str(ex)
     if r.returncode != 0:
         return False, (r.stderr or r.stdout or "kode %d" % r.returncode).strip()[:300]
+    if catatan:
+        return True, "Posisi khusus tidak bisa diterapkan (%s). Struk dicetak dengan pengaturan standar printer." % catatan
     return True, ""
 
 
@@ -344,8 +423,12 @@ class App(tk.Tk):
         if GUEST:
             tk.Label(self, text="MODE TAMU: data contoh, tidak tersimpan dan tidak terhubung ke data toko.", bg="#fef3c7", fg="#92400e",
                      font=("Segoe UI", 10)).pack(fill="x")
-        self.items, self.cart, self.cocok = [], [], []
-        self.modal = {}
+        self.items, self.cocok = [], []
+        self.pos_cetak = None
+        self.nomor = 0
+        self.trxs = [self.baru_dict()]
+        self.aktif = 0
+        self.cart, self.modal = self.trxs[0]["cart"], self.trxs[0]["modal"]
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True)
         self.t_kasir, self.t_trx, self.t_brg, self.t_help = [ttk.Frame(self.nb) for _ in range(4)]
@@ -354,6 +437,7 @@ class App(tk.Tk):
             self.nb.add(f, text=t)
         self.build_kasir(); self.build_trx(); self.build_brg(); self.build_help()
         self.bind_keys()
+        self.nb.bind("<<NotebookTabChanged>>", self.tab_berubah)
         self.refresh_all()
         self.ok = True
         self.ent.focus_set()
@@ -446,6 +530,74 @@ class App(tk.Tk):
                 pass
             self.destroy()
 
+    # ---------- banyak transaksi (tab) ----------
+    def baru_dict(self):
+        self.nomor += 1
+        return {"nama": "Transaksi %d" % self.nomor, "cart": [], "modal": {}, "terima": "", "metode": "Cash"}
+
+    def simpan_tab(self):
+        t = self.trxs[self.aktif]
+        t["cart"], t["modal"] = self.cart, self.modal
+        t["terima"], t["metode"] = self.terima.get(), self.metode.get()
+
+    def muat_tab(self, i):
+        self.aktif = i
+        t = self.trxs[i]
+        self.cart, self.modal = t["cart"], t["modal"]
+        self.metode.set(t["metode"]); self.terima.set(t["terima"])
+        self.atur_metode(); self.draw()
+
+    def pilih_tab(self, i):
+        if i == self.aktif or not (0 <= i < len(self.trxs)):
+            return
+        self.simpan_tab(); self.muat_tab(i); self.ent.focus_set()
+
+    def tab_baru(self, _=None):
+        self.nb.select(0)
+        self.simpan_tab()
+        self.trxs.append(self.baru_dict())
+        self.muat_tab(len(self.trxs) - 1)
+        self.ent.focus_set()
+
+    def tutup_tab(self, i=None):
+        i = self.aktif if i is None else i
+        self.simpan_tab()
+        t = self.trxs[i]
+        if t["cart"] and not messagebox.askyesno("Tutup transaksi", "%s masih berisi belanjaan.\nTutup dan buang?" % t["nama"]):
+            return
+        if len(self.trxs) == 1:
+            self.trxs[0] = self.baru_dict()
+        else:
+            del self.trxs[i]
+            if i < self.aktif:
+                self.aktif -= 1
+            elif i == self.aktif:
+                self.aktif = min(i, len(self.trxs) - 1)
+        self.muat_tab(self.aktif)
+        self.ent.focus_set()
+
+    def gambar_tab(self):
+        try:
+            for w in self.tabbar.winfo_children():
+                w.destroy()
+            for i, t in enumerate(self.trxs):
+                akt = i == self.aktif
+                bg = "#ffffff" if akt else "#e1e7f2"
+                ke = self.cart if akt else t["cart"]
+                tot = sum(h * q for _, h, q in ke)
+                f = tk.Frame(self.tabbar, bg=bg, highlightthickness=1, highlightbackground="#c3ccdc", highlightcolor="#c3ccdc")
+                f.pack(side="left", padx=(0, 3))
+                lb = tk.Label(f, text=t["nama"] + ("  " + rp(tot) if ke else ""), bg=bg, cursor="hand2", padx=10, pady=5,
+                              fg="#2563eb" if akt else "#374151", font=("Segoe UI", 10, "bold" if akt else "normal"))
+                lb.pack(side="left"); lb.bind("<Button-1>", lambda e, i=i: self.pilih_tab(i))
+                x = tk.Label(f, text="×", bg=bg, fg="#6b7280", cursor="hand2", font=("Segoe UI", 12), padx=6)
+                x.pack(side="left"); x.bind("<Button-1>", lambda e, i=i: self.tutup_tab(i))
+            p = tk.Label(self.tabbar, text="+ Baru (Ctrl+T)", bg="#f3f5f9", fg="#2563eb", cursor="hand2",
+                         font=("Segoe UI", 10, "bold"), padx=8, pady=5)
+            p.pack(side="left"); p.bind("<Button-1>", self.tab_baru)
+        except tk.TclError:
+            pass
+
     def tema(self):
         s = ttk.Style(self); s.theme_use("clam")
         BG, AC = "#f3f5f9", "#2563eb"
@@ -510,6 +662,12 @@ class App(tk.Tk):
         b("<F10>", self.k(lambda: self.ent_terima.focus_set()))
         b("<F11>", self.k(self.ganti_metode)); b("<Control-p>", lambda e: (self.ekspor_pdf(), "break")[1])
         b("<Alt-r>", lambda e: (self.toggle_view(), "break")[1])
+        b("<Control-t>", lambda e: (self.tab_baru(), "break")[1])
+        b("<Control-w>", lambda e: (self.tutup_tab() if self.tab() == 0 else None, "break")[1])
+        for n_ in range(1, 10):
+            b("<Alt-Key-%d>" % n_, lambda e, n_=n_: (self.pilih_tab(n_ - 1) if self.tab() == 0 else None, "break")[1])
+        b("<Alt-Left>", lambda e: (self.geser_hari(-1) if self.tab() == 1 else None, "break")[1])
+        b("<Alt-Right>", lambda e: (self.geser_hari(1) if self.tab() == 1 else None, "break")[1])
         b("<F9>", lambda e: (self.ganti_printer(), "break")[1])
         b("<F7>", self.a_hapus); b("<Control-s>", self.a_simpan)
 
@@ -584,6 +742,7 @@ class App(tk.Tk):
     # ---------- KASIR ----------
     def build_kasir(self):
         f = self.t_kasir
+        self.tabbar = tk.Frame(f, bg="#f3f5f9"); self.tabbar.pack(fill="x", padx=10, pady=(8, 0))
         top = ttk.Frame(f); top.pack(fill="x", padx=10, pady=(8, 2))
         ttk.Label(top, text="Cari barang (F2)").pack(side="left")
         self.q = tk.StringVar()
@@ -649,6 +808,9 @@ class App(tk.Tk):
             row=5, column=1, pady=(10, 0), sticky="ew", padx=(30, 0))
         self.ent_terima.bind("<KeyRelease>", lambda e: self.hitung())
         self.ent_terima.bind("<Return>", lambda e: self.bayar())
+        for w_ in (self.ent, self.ent_terima):
+            w_.bind("<Control-t>", lambda e: (self.tab_baru(), "break")[1])
+        self.gambar_tab()
 
     def on_key(self, e):
         if e.keysym not in ("Up", "Down", "Return", "Escape", "Tab"):
@@ -743,6 +905,8 @@ class App(tk.Tk):
             p = str(min(pilih, len(self.cart) - 1))
             self.tv.selection_set(p); self.tv.focus(p); self.tv.see(p)
         self.lbl_total.config(text=rp(self.total())); self.hitung()
+        if hasattr(self, "tabbar"):
+            self.after_idle(self.gambar_tab)
 
     def angka(self, s):
         s = s.replace("Rp", "").replace(".", "").replace(",", "").strip()
@@ -822,21 +986,74 @@ class App(tk.Tk):
         return "\n".join(b)
 
     def preview(self, teks):
-        d = tk.Toplevel(self); d.title("Preview Struk"); d.transient(self); d.grab_set(); d.configure(bg="#f3f5f9")
-        ttk.Label(d, text="Preview struk - periksa sebelum dicetak", font=("Segoe UI", 11, "bold")).pack(padx=16, pady=(12, 6))
-        t = tk.Text(d, width=34, height=min(30, teks.count("\n") + 2), font=("Consolas", 11), relief="flat", padx=12, pady=10)
-        t.insert("1.0", teks); t.config(state="disabled"); t.pack(padx=16)
-        ttk.Label(d, text="Printer: " + (CFG.get("printer") or "(belum dipilih)")).pack(pady=6)
+        d = tk.Toplevel(self); d.title("Preview & Posisi Cetak"); d.transient(self); d.grab_set(); d.configure(bg="#f3f5f9")
+        ttk.Label(d, text="Preview struk dan posisi cetak di kertas", font=("Segoe UI", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, padx=16, pady=(12, 6), sticky="w")
+        t = tk.Text(d, width=34, height=min(26, teks.count("\n") + 2), font=("Consolas", 11), relief="flat", padx=12, pady=10)
+        t.insert("1.0", teks); t.config(state="disabled"); t.grid(row=1, column=0, padx=(16, 8), sticky="n")
+        kn = ttk.Frame(d); kn.grid(row=1, column=1, padx=(8, 16), sticky="n")
+        c = CFG.get("cetak", {})
+        pos = tk.StringVar(value=c.get("pos", "0,0"))
+        dxv, dyv, fv = tk.StringVar(value=str(c.get("dx", 5))), tk.StringVar(value=str(c.get("dy", 5))), tk.StringVar(value=str(c.get("font", 9)))
+        nama_pos = {"0,0": "Kiri atas (Top Left)", "0.5,0": "Tengah atas (Top Center)", "1,0": "Kanan atas (Top Right)",
+                    "0,0.5": "Kiri tengah (Middle Left)", "0.5,0.5": "Tengah (Center)", "1,0.5": "Kanan tengah (Middle Right)",
+                    "0,1": "Kiri bawah (Bottom Left)", "0.5,1": "Tengah bawah (Bottom Center)", "1,1": "Kanan bawah (Bottom Right)"}
+        ttk.Label(kn, text="Posisi di kertas (seperti Corel):").pack(anchor="w")
+        nm = ttk.Label(kn, text="", foreground="#2563eb")
+        cv = tk.Canvas(kn, width=130, height=184, bg="#e5e9f2", highlightthickness=0)
+
+        def angka(v, dflt):
+            try:
+                return float(v.get().replace(",", "."))
+            except ValueError:
+                return dflt
+
+        def gambar(_=None):
+            cv.delete("all")
+            ax, ay = [float(z) for z in pos.get().split(",")]
+            baris = teks.split("\n"); lw = max(len(z.rstrip()) for z in baris); fs = angka(fv, 9)
+            bw, bh = lw * fs * 0.6 * 0.3528, len(baris) * fs * 1.2 * 0.3528
+            x, y = hitung_posisi(ax, ay, angka(dxv, 0), angka(dyv, 0), bw, bh)
+            s = 128 / 210.0
+            cv.create_rectangle(1, 1, 129, 183, fill="#ffffff", outline="#9aa5b8")
+            cv.create_rectangle(1 + x * s, 1 + y * s, 1 + (x + bw) * s, 1 + (y + bh) * s, fill="#93c5fd", outline="#2563eb")
+            nm.config(text=nama_pos.get(pos.get(), ""))
+        gr = ttk.Frame(kn); gr.pack(anchor="w", pady=4)
+        simbol = ("↖", "↑", "↗", "←", "●", "→", "↙", "↓", "↘")
+        n = 0
+        for ri, rv in enumerate((0, 0.5, 1)):
+            for ci, cvv in enumerate((0, 0.5, 1)):
+                tk.Radiobutton(gr, text=simbol[n], variable=pos, value="%s,%s" % (cvv, rv), indicatoron=0, width=4,
+                               font=("Segoe UI", 12), selectcolor="#93c5fd", command=gambar).grid(row=ri, column=ci, padx=1, pady=1)
+                n += 1
+        nm.pack(anchor="w")
+        of = ttk.Frame(kn); of.pack(anchor="w", pady=6)
+        for r_, (lbl, var) in enumerate((("Jarak tepi mendatar (mm)", dxv), ("Jarak tepi vertikal (mm)", dyv), ("Ukuran huruf (pt)", fv))):
+            ttk.Label(of, text=lbl).grid(row=r_, column=0, sticky="w", pady=2)
+            e = ttk.Entry(of, textvariable=var, width=6); e.grid(row=r_, column=1, padx=6)
+            e.bind("<KeyRelease>", gambar); e.bind("<Return>", lambda ev: (gambar(), "break")[1])
+        cv.pack(anchor="w", pady=(4, 0))
+        ttk.Label(kn, text="Gambaran skematis kertas A4", foreground="#6b7280").pack(anchor="w")
+        ttk.Label(d, text="Printer: " + (CFG.get("printer") or "(belum dipilih)")).grid(row=2, column=0, columnspan=2, pady=6)
         hasil = {}
 
         def pilih(v):
+            if v == "cetak":
+                ax, ay = [float(z) for z in pos.get().split(",")]
+                dx, dy, fs = angka(dxv, 5), angka(dyv, 5), min(max(angka(fv, 9), 5), 20)
+                CFG["cetak"] = {"pos": pos.get(), "dx": dx, "dy": dy, "font": fs}
+                try:
+                    json.dump(CFG, open(CFG_PATH, "w", encoding="utf-8"), indent=2)
+                except OSError:
+                    pass
+                self.pos_cetak = {"ax": ax, "ay": ay, "dx": dx if ax < 1 else -dx, "dy": dy if ay < 1 else -dy, "font": fs}
             hasil["v"] = v; d.destroy()
-        bt = ttk.Frame(d); bt.pack(pady=(0, 12))
+        bt = ttk.Frame(d); bt.grid(row=3, column=0, columnspan=2, pady=(0, 12))
         ttk.Button(bt, text="Cetak & Simpan (Enter)", style="Accent.TButton", command=lambda: pilih("cetak")).pack(side="left", padx=4)
         ttk.Button(bt, text="Simpan tanpa cetak", command=lambda: pilih("simpan")).pack(side="left", padx=4)
         ttk.Button(bt, text="Batal (Esc)", command=d.destroy).pack(side="left", padx=4)
         d.bind("<Return>", lambda e: pilih("cetak")); d.bind("<Escape>", lambda e: d.destroy())
-        d.focus_set(); self.wait_window(d)
+        gambar(); d.focus_set(); self.wait_window(d)
         return hasil.get("v")
 
     def bayar(self):
@@ -867,12 +1084,14 @@ class App(tk.Tk):
         if ok is None:
             return
         if printer:
-            ok_cetak, pesan = cetak_teks(teks, printer)
+            ok_cetak, pesan = cetak_teks(teks, printer, self.pos_cetak)
             if not ok_cetak:
                 messagebox.showwarning("Cetak gagal", "Transaksi sudah tersimpan, tetapi struk tidak tercetak:\n%s\n\nCek pilihan printer (F9)." % pesan)
+            elif pesan:
+                messagebox.showinfo("Cetak", pesan)
         messagebox.showinfo("Selesai", "Kembalian: " + rp(dibayar - tot))
         self.cart = []; self.modal = {}; self.metode.set("Cash"); self.atur_metode(); self.terima.set("")
-        self.draw(); self.load_trx(); self.ent.focus_set()
+        self.draw(); self.ke_hari_ini(); self.tutup_tab()
 
     # ---------- TRANSAKSI ----------
     def build_trx(self):
@@ -898,6 +1117,16 @@ class App(tk.Tk):
         ttk.Radiobutton(ex, text="Rekap per hari", variable=self.x_view, value="rekap", command=self.ganti_view).pack(side="right", padx=4)
         ttk.Radiobutton(ex, text="Riwayat", variable=self.x_view, value="riwayat", command=self.ganti_view).pack(side="right", padx=4)
         self.lbl_sum = ttk.Label(f, text="", font=("Arial", 11, "bold")); self.lbl_sum.pack(anchor="w", padx=10)
+        nav = ttk.Frame(f); nav.pack(fill="x", padx=10, pady=(2, 4))
+        self.tgl_riwayat = tk.StringVar(value=hari_ini()); self._hari = hari_ini()
+        ttk.Button(nav, text="◀", width=3, command=lambda: self.geser_hari(-1)).pack(side="left")
+        ttk.Label(nav, text="Tanggal (YYYY-MM-DD):").pack(side="left", padx=(8, 2))
+        te = ttk.Entry(nav, textvariable=self.tgl_riwayat, width=12, justify="center"); te.pack(side="left")
+        te.bind("<Return>", lambda e: self.load_trx())
+        ttk.Button(nav, text="▶", width=3, command=lambda: self.geser_hari(1)).pack(side="left", padx=(2, 4))
+        ttk.Button(nav, text="Tampilkan", command=self.load_trx).pack(side="left", padx=2)
+        ttk.Button(nav, text="Hari ini", command=self.ke_hari_ini).pack(side="left", padx=2)
+        self.lbl_tgl = ttk.Label(nav, text="", font=("Segoe UI", 10, "bold")); self.lbl_tgl.pack(side="left", padx=10)
         self.lbl_hari = ttk.Label(f, text="", font=("Segoe UI", 12, "bold"), foreground="#16a34a")
         self.lbl_hari.pack(side="bottom", anchor="e", padx=14, pady=6)
         self.tv_trx = ttk.Treeview(f, columns=("w", "t", "k", "m", "d", "j", "l"), show="headings", height=20)
@@ -919,7 +1148,7 @@ class App(tk.Tk):
             return messagebox.showwarning("Cek", "Jumlah harus angka")
         self.safe(lambda: api("POST", "transactions", "", {"type": self.x_tipe.get(), "category": self.x_kat.get(),
                                                              "description": self.x_ket.get(), "amount": j}))
-        self.x_jml.set(""); self.x_ket.set(""); self.load_trx()
+        self.x_jml.set(""); self.x_ket.set(""); self.ke_hari_ini()
 
     def ekspor_pdf(self):
         try:
@@ -1019,8 +1248,36 @@ class App(tk.Tk):
             self.safe(lambda: api("DELETE", "transactions", "?id=eq." + s[0]))
             self.load_trx()
 
+    def tgl_pilih(self):
+        try:
+            return datetime.strptime(self.tgl_riwayat.get().strip(), "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    def geser_hari(self, d):
+        t = (self.tgl_pilih() or datetime.now()) + timedelta(days=d)
+        if t.date() > datetime.now().date():
+            t = datetime.now()
+        self.tgl_riwayat.set(t.strftime("%Y-%m-%d")); self.load_trx()
+
+    def ke_hari_ini(self):
+        self.tgl_riwayat.set(hari_ini()); self._hari = hari_ini(); self.load_trx()
+
+    def tab_berubah(self, _=None):
+        if self.tab() == 1 and hari_ini() != self._hari:
+            if self.tgl_riwayat.get() == self._hari:
+                self.tgl_riwayat.set(hari_ini())
+            self._hari = hari_ini(); self.load_trx()
+
     def load_trx(self):
-        r = self.safe(lambda: api("GET", "transactions", "?select=*&order=created_at.desc&limit=500")) or []
+        t = self.tgl_pilih()
+        if t is None:
+            messagebox.showwarning("Cek", "Tanggal harus berbentuk YYYY-MM-DD, contoh %s" % hari_ini())
+            t = datetime.now(); self.tgl_riwayat.set(hari_ini())
+        a = t.replace(hour=0, minute=0, second=0, microsecond=0); b = a + timedelta(days=1)
+        q = "?select=*&order=created_at.desc&limit=5000&created_at=gte.%s&created_at=lt.%s" % (
+            urllib.parse.quote(a.astimezone().isoformat()), urllib.parse.quote(b.astimezone().isoformat()))
+        r = self.safe(lambda: api("GET", "transactions", q)) or []
         self.tv_trx.delete(*self.tv_trx.get_children())
         m = k = lb = 0
         for t in r:
@@ -1032,7 +1289,10 @@ class App(tk.Tk):
             if t["type"] == "income": m += t["amount"]
             else: k += t["amount"]
             lb += lab or 0
-        self.lbl_sum.config(text="Pemasukan %s  |  Pengeluaran %s  |  Saldo %s  |  Laba penjualan %s  (500 terakhir)"
+        self.lbl_tgl.config(text="%s, %s%s%s" % (NAMA_HARI[a.weekday()], a.strftime("%d-%m-%Y"),
+                                                 "  (hari ini)" if a.date() == datetime.now().date() else "",
+                                                 "" if r else "  -  belum ada transaksi"))
+        self.lbl_sum.config(text="Pemasukan %s  |  Pengeluaran %s  |  Saldo %s  |  Laba penjualan %s"
                             % (rp(m), rp(k), rp(m - k), rp(lb)))
         self.load_rekap()
 
