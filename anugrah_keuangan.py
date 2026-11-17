@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 NAMA_TOKO = "ANUGRAH FOTOCOPY"
-VERSI = "1.4.0"
+VERSI = "1.4.1"
 BASE = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
 CFG_PATH = os.path.join(BASE, "config.json")
 CFG = json.load(open(CFG_PATH, encoding="utf-8"))
@@ -28,6 +28,8 @@ KASIR
   (ketik)     Daftar barang otomatis tersaring sesuai huruf yang diketik
   Panah Atas/Bawah   Pilih barang di daftar saran
   Enter       Tambahkan barang yang dipilih ke belanjaan (jumlah sesuai kolom Qty)
+  Tab         Ketik nama barang, Tab ke kolom Qty (angka langsung terpilih), ketik jumlah, lalu Enter untuk menambah.
+              Bisa juga Tab sekali lagi ke tombol "+ Tambah" lalu Enter. Enter berlaku untuk semua tombol yang terfokus.
   Esc         Kosongkan kolom cari
   F3          Barang bebas (nama & harga diketik manual)
   F4          Edit harga item terpilih (bisa juga Enter / klik 2x pada item)
@@ -437,6 +439,7 @@ class App(tk.Tk):
             self.nb.add(f, text=t)
         self.build_kasir(); self.build_trx(); self.build_brg(); self.build_help()
         self.bind_keys()
+        self.bind_class("TButton", "<Return>", lambda e: (e.widget.invoke(), "break")[1])
         self.nb.bind("<<NotebookTabChanged>>", self.tab_berubah)
         self.refresh_all()
         self.ok = True
@@ -613,9 +616,9 @@ class App(tk.Tk):
         s.configure("Treeview.Heading", background="#e9edf5", font=("Segoe UI", 10, "bold"), padding=6, relief="flat")
         s.map("Treeview", background=[("selected", AC)], foreground=[("selected", "#ffffff")])
         s.configure("TButton", padding=(12, 7), background="#e5e9f2", borderwidth=0)
-        s.map("TButton", background=[("active", "#d5dbe9")])
+        s.map("TButton", background=[("active", "#d5dbe9"), ("focus", "#c7d2fe")])
         s.configure("Accent.TButton", background=AC, foreground="#ffffff", font=("Segoe UI", 11, "bold"))
-        s.map("Accent.TButton", background=[("active", "#1d4ed8")])
+        s.map("Accent.TButton", background=[("active", "#1d4ed8"), ("focus", "#1e3a8a")])
         s.configure("Card.TFrame", background="#ffffff")
         s.configure("Card.TLabel", background="#ffffff", font=("Segoe UI", 11))
         s.configure("Total.TLabel", background="#ffffff", font=("Segoe UI", 24, "bold"), foreground=AC)
@@ -750,12 +753,15 @@ class App(tk.Tk):
         self.ent.pack(side="left", padx=5)
         ttk.Label(top, text="Qty").pack(side="left")
         self.qty = tk.IntVar(value=1)
-        ttk.Spinbox(top, from_=1, to=9999, textvariable=self.qty, width=6).pack(side="left", padx=5)
+        self.sp_qty = ttk.Spinbox(top, from_=1, to=9999, textvariable=self.qty, width=6)
+        self.sp_qty.pack(side="left", padx=5)
         ttk.Button(top, text="+ Tambah (Enter)", command=self.tambah).pack(side="left", padx=3)
         ttk.Button(top, text="Barang bebas (F3)", command=self.tambah_bebas).pack(side="left", padx=3)
         self.lb = tk.Listbox(f, height=4, exportselection=False, font=("Segoe UI", 11), relief="flat", highlightthickness=1,
                              highlightbackground="#d5dbe9", selectbackground="#2563eb", selectforeground="#ffffff")
         self.lb.pack(fill="x", padx=10, pady=(0, 6))
+        self.sp_qty.bind("<Return>", lambda e: self.enter_qty())
+        self.sp_qty.bind("<FocusIn>", lambda e: self.after_idle(lambda: self.sp_qty.selection_range(0, "end")))
         self.ent.bind("<KeyRelease>", self.on_key)
         self.ent.bind("<Return>", lambda e: self.tambah())
         self.ent.bind("<Down>", lambda e: self.geser(1)); self.ent.bind("<Up>", lambda e: self.geser(-1))
@@ -812,11 +818,18 @@ class App(tk.Tk):
             w_.bind("<Control-t>", lambda e: (self.tab_baru(), "break")[1])
         self.gambar_tab()
 
+    def enter_qty(self):
+        """Enter di kolom Qty = tambahkan barang (kecuali belum ada yang diketik/dipilih)."""
+        if self.q.get().strip() or self.pilih_manual:
+            self.tambah()
+        return "break"
+
     def on_key(self, e):
         if e.keysym not in ("Up", "Down", "Return", "Escape", "Tab"):
             self.filter()
 
     def filter(self):
+        self.pilih_manual = False
         q = self.q.get().strip().lower()
         m = [i for i in self.items if q in i["name"].lower()]
         m.sort(key=lambda i: (not i["name"].lower().startswith(q), i["name"].lower()))
@@ -832,6 +845,7 @@ class App(tk.Tk):
             c = self.lb.curselection()
             i = max(0, min((c[0] if c else -1) + d, len(self.cocok) - 1))
             self.lb.selection_clear(0, "end"); self.lb.selection_set(i); self.lb.see(i)
+            self.pilih_manual = True
         return "break"
 
     def jumlah(self):
